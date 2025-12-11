@@ -7,11 +7,9 @@ except RuntimeError:
     asyncio.set_event_loop(_loop)
 import pandas as pd
 import numpy as np
-from scipy.stats import norm
 from ib_async import *
 from ib_async.contract import Option
 import math
-from scipy.stats import norm
 import logging
 import json
 from pathlib import Path
@@ -40,7 +38,7 @@ MAX_DEBIT = 2.00       # Max cost
 MIN_OPT_VOL = 5        # Liquidity filter for individual legs
 MIN_POP = 0.5         # Min Probability of Profit
 RISK_FREE_RATE = 0.044 # ~4.4% (Used if IBKR yields are unavailable)
-SCAN_LIMIT = 25         # Limit scanner to top 5 stocks to respect API pacing
+SCAN_LIMIT = 25         # Limit scanner result count to avoid pacing issues
 MIN_PRICE = 10        # Skip penny/small names that often lack options data; scanner uses this floor
 SCANNER_CODE = 'MOST_ACTIVE'  # IB scanner code 
 MANUAL_SYMBOLS = []   # Optional override list; if non-empty, skip scanner and use this list
@@ -82,46 +80,6 @@ MU_TREND_THRESH = 0.05        # annual drift threshold for up/down classificatio
 MOMENTUM_WINDOW_DAYS = 20     # short-term momentum window for alignment
 
 # ==========================================
-# Math Helpers (Black-Scholes)
-# ==========================================
-
-def calculate_pop(S, K_break_even, T, r, sigma, option_type='C'):
-    """
-    Calculates Probability of Profit (PoP).
-    """
-
-    if T <= 0 or sigma <= 0 or S <= 0:
-        return 0.0
-
-    # d2 term determines the probability of expiring ITM in the BSM model
-    # d2 = (ln(S/K) + (r - 0.5*sigma^2)T) / (sigma*sqrt(T))
-    d2 = (np.log(S / K_break_even) + (r - 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-
-    if option_type == 'C':
-        return norm.cdf(d2)
-
-    elif option_type == 'P':
-        return norm.cdf(-d2)
-
-    return 0.0
-
-def compute_ev_metrics(max_profit, max_loss, pop, days_to_expiry):
-    """
-    Compute expectation and (approx) monthly ROI for a single vertical spread.
-
-    Returns (ev, roi_trade, roi_monthly) or None if invalid.
-    """
-    if max_loss <= 0 or days_to_expiry <= 0:
-        return None
-
-    # Expected value over the life of the spread
-    ev = pop * max_profit - (1.0 - pop) * max_loss
-
-    roi_trade = ev / max_loss  # expected return per unit margin over life
-    roi_monthly = roi_trade * (30.0 / days_to_expiry)
-
-    return ev, roi_trade, roi_monthly
-
 def bs_option_price_torch(S, K, T, r, sigma, right):
     """
     Black–Scholes price for a European call or put (vectorized).
@@ -337,16 +295,6 @@ def count_lower_pairs(df):
 def bar_update(bar, n=1):
     if bar:
         bar.update(n)
-
-
-async def sleep_progress(seconds, desc):
-    if seconds <= 0:
-        return
-    bar = tqdm(total=seconds, desc=desc, leave=False)
-    for _ in range(seconds):
-        await asyncio.sleep(1)
-        bar.update(1)
-    bar.close()
 
 
 async def wait_for_quotes(
@@ -661,7 +609,7 @@ async def main():
 
     # 1. Scanner: Find stocks with scanner
 
-    # filtering for US Major stocks with price > $20 to ensure liquidity quality
+    # Filtering for US Major stocks with a price floor to ensure liquidity quality
 
     sub = ScannerSubscription(
         instrument='STK',
@@ -823,7 +771,7 @@ async def main():
             # all four spread loops + Monte Carlo, etc.
 
 
-            # Select Strikes: +/- 5% of current price to keep request count low
+            # Select Strikes: +/- 10% of current price to keep request count low
             strikes = [k for k in chain.strikes if 0.90 * underlying_price < k < 1.10 * underlying_price]
             print(f"  Candidate strikes within +/-10%: {len(strikes)}")
 
