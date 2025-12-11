@@ -235,7 +235,10 @@ def simulate_vertical_pop_ev_torch(
         r_pricing = mu_t
 
     tp_level = tp_frac * max_profit
-    sl_level = -sl_frac * max_loss
+    if entry_type == 'Debit':
+        sl_level = -sl_frac * max_loss
+    else:
+        sl_level = -sl_frac * entry
 
     dt = T_tot / n_steps
     daytrade_threshold_years = daytrade_threshold_days / 365.0
@@ -1300,7 +1303,7 @@ async def main():
                         right='C',
                         entry=cost,
                         max_profit=max_profit,
-                        max_loss=cost,        # debit = max loss
+                        max_loss=cost,        
                         entry_type='Debit',
                         tp_frac=MC_TP_FRAC,
                         sl_frac=MC_SL_DEBIT_FRAC,
@@ -1398,116 +1401,116 @@ async def main():
                         log_filter(f"Credit {credit:.2f} <= MIN_ENTRY {MIN_ENTRY}", contract.symbol, target_exp, spread_desc)
                         continue
 
-                        width = long_leg['strike'] - short_leg['strike']
-                        if width < MIN_WIDTH or width > MAX_WIDTH:
-                            log_filter(f"Width {width:.2f} outside {MIN_WIDTH}-{MAX_WIDTH}", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if width <= 0:
-                            log_filter("Width non-positive", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if credit >= width:  # inverted/arb spread; data likely stale
-                            log_filter(f"Credit {credit:.2f} >= width {width:.2f}", contract.symbol, target_exp, spread_desc)
-                            continue
+                    width = long_leg['strike'] - short_leg['strike']
+                    if width < MIN_WIDTH or width > MAX_WIDTH:
+                        log_filter(f"Width {width:.2f} outside {MIN_WIDTH}-{MAX_WIDTH}", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if width <= 0:
+                        log_filter("Width non-positive", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if credit >= width:  # inverted/arb spread; data likely stale
+                        log_filter(f"Credit {credit:.2f} >= width {width:.2f}", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        max_loss = width - credit
-                        if max_loss <= 0:
-                            log_filter(f"Max loss {max_loss:.2f} <= 0", contract.symbol, target_exp, spread_desc)
-                            continue
+                    max_loss = width - credit
+                    if max_loss <= 0:
+                        log_filter(f"Max loss {max_loss:.2f} <= 0", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        be_price = short_leg['strike'] + credit
-                        avg_iv = (long_leg['iv'] + short_leg['iv']) / 2
-                        skew_capture = short_leg['iv'] - long_leg['iv']
-                        sigma_input = avg_iv if avg_iv and avg_iv > 0 else sigma_fallback
-                        if sigma_input is None or sigma_input <= 0:
-                            log_filter("No usable sigma for MC", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if skew_capture < MIN_SKEW_CAPTURE_BEAR:
-                            log_filter(f"Skew capture {skew_capture:.3f} < {MIN_SKEW_CAPTURE_BEAR}", contract.symbol, target_exp, spread_desc)
-                            continue
+                    be_price = short_leg['strike'] + credit
+                    avg_iv = (long_leg['iv'] + short_leg['iv']) / 2
+                    skew_capture = short_leg['iv'] - long_leg['iv']
+                    sigma_input = avg_iv if avg_iv and avg_iv > 0 else sigma_fallback
+                    if sigma_input is None or sigma_input <= 0:
+                        log_filter("No usable sigma for MC", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if skew_capture < MIN_SKEW_CAPTURE_BEAR:
+                        log_filter(f"Skew capture {skew_capture:.3f} < {MIN_SKEW_CAPTURE_BEAR}", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        # Canonical call vertical: long lower, short higher
-                        long_strike = short_leg['strike']   # lower
-                        short_strike = long_leg['strike']   # higher
+                    # Canonical call vertical: long lower, short higher
+                    long_strike = short_leg['strike']   # lower
+                    short_strike = long_leg['strike']   # higher
 
-                        log_pass("Running MC", contract.symbol, target_exp, spread_desc)
-                        mc_stats['mc_runs'] += 1
-                        pop_mc, ev_mc, avg_ht, p_daytrade = simulate_vertical_pop_ev_torch(
-                            S0=underlying_price,
-                            r=RISK_FREE_RATE,
-                            sigma=sigma_input,
-                            T=T,
-                            long_strike=long_strike,
-                            short_strike=short_strike,
+                    log_pass("Running MC", contract.symbol, target_exp, spread_desc)
+                    mc_stats['mc_runs'] += 1
+                    pop_mc, ev_mc, avg_ht, p_daytrade = simulate_vertical_pop_ev_torch(
+                        S0=underlying_price,
+                        r=RISK_FREE_RATE,
+                        sigma=sigma_input,
+                        T=T,
+                        long_strike=long_strike,
+                        short_strike=short_strike,
                         right='C',
                         entry=credit,
                         max_profit=credit,
                         max_loss=max_loss,
-                        entry_type='Credit',  # short the canonical vertical
+                        entry_type='Credit',  
                         tp_frac=MC_TP_FRAC,
                         sl_frac=MC_SL_CREDIT_MULT,
                         n_paths=MC_N_PATHS,
                         n_steps=MC_N_STEPS,
-                            daytrade_threshold_days=MC_DAYTRADE_THRESHOLD_DAYS,
-                            device=None,
-                            mu=mu_param,
-                            realized_vol_frac=rv_frac_param
-                        )
+                        daytrade_threshold_days=MC_DAYTRADE_THRESHOLD_DAYS,
+                        device=None,
+                        mu=mu_param,
+                        realized_vol_frac=rv_frac_param
+                    )
 
 
-                        if pop_mc <= MIN_POP:
-                            mc_stats['pop_fail'] += 1
-                            log_filter(f"PoP {pop_mc:.3f} <= {MIN_POP}", contract.symbol, target_exp, spread_desc)
-                            continue
+                    if pop_mc <= MIN_POP:
+                        mc_stats['pop_fail'] += 1
+                        log_filter(f"PoP {pop_mc:.3f} <= {MIN_POP}", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        ev = ev_mc
-                        if REQUIRE_POSITIVE_EV and ev <= 0:
-                            mc_stats['ev_fail'] += 1
-                            log_filter(f"EV {ev:.3f} <= 0 with positive EV required", contract.symbol, target_exp, spread_desc)
-                            continue
+                    ev = ev_mc
+                    if REQUIRE_POSITIVE_EV and ev <= 0:
+                        mc_stats['ev_fail'] += 1
+                        log_filter(f"EV {ev:.3f} <= 0 with positive EV required", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        roi_trade = ev / max_loss   # margin ≈ max_loss
-                        ev_per_risk = roi_trade
-                        roi_monthly = roi_trade * (30.0 / days_to_expiry)
+                    roi_trade = ev / max_loss   # margin ≈ max_loss
+                    ev_per_risk = roi_trade
+                    roi_monthly = roi_trade * (30.0 / days_to_expiry)
 
-                        if ev < MIN_EV:
-                            log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if ev_per_risk < MIN_EV_PER_RISK:
-                            log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
-                            continue
-                        hold_days = avg_ht * 365.0
-                        if hold_days < MIN_HOLD_DAYS:
-                            mc_stats['hold_fail'] += 1
-                            log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if roi_monthly < TARGET_MONTHLY_RETURN:
-                            mc_stats['roi_fail'] += 1
-                            log_filter(f"ROI/month {roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}", contract.symbol, target_exp, spread_desc)
-                            continue
+                    if ev < MIN_EV:
+                        log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if ev_per_risk < MIN_EV_PER_RISK:
+                        log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
+                        continue
+                    hold_days = avg_ht * 365.0
+                    if hold_days < MIN_HOLD_DAYS:
+                        mc_stats['hold_fail'] += 1
+                        log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if roi_monthly < TARGET_MONTHLY_RETURN:
+                        mc_stats['roi_fail'] += 1
+                        log_filter(f"ROI/month {roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        opportunities.append({
-                            'Symbol': contract.symbol,
-                            'Expiry': target_exp,
-                            'Strategy': f"{short_leg['strike']}/{long_leg['strike']} Bear Call",
-                            'Entry': round(credit, 2),
-                            'Entry Type': 'Credit',
-                            'Max Profit': round(credit, 2),
-                            'Max Loss': round(max_loss, 2),
-                            'PoP': round(pop_mc, 3),
-                            'EV': round(ev, 2),
-                            'EV_Per_Risk': round(ev_per_risk, 3),
-                            'Skew_Capture': round(skew_capture, 3),
-                            'Skew_Expiry': round(skew_metric, 3) if skew_metric is not None else None,
-                            'ROI_Monthly': round(roi_monthly, 3),
-                            'AvgHold_days': round(hold_days, 1),
-                            'P_Daytrade': round(p_daytrade, 3),
-                            'IV': round(avg_iv, 3),
-                            'Underlying': round(underlying_price, 2),
-                            'BE': round(be_price, 2)
-                        })
-                        log_pass(f"MC accepted: PoP {pop_mc:.3f}, EV {ev:.2f}, ROI/mo {roi_monthly:.3f}", contract.symbol, target_exp, spread_desc)
-                        mc_stats['accepted'] += 1
-                                   
+                    opportunities.append({
+                        'Symbol': contract.symbol,
+                        'Expiry': target_exp,
+                        'Strategy': f"{short_leg['strike']}/{long_leg['strike']} Bear Call",
+                        'Entry': round(credit, 2),
+                        'Entry Type': 'Credit',
+                        'Max Profit': round(credit, 2),
+                        'Max Loss': round(max_loss, 2),
+                        'PoP': round(pop_mc, 3),
+                        'EV': round(ev, 2),
+                        'EV_Per_Risk': round(ev_per_risk, 3),
+                        'Skew_Capture': round(skew_capture, 3),
+                        'Skew_Expiry': round(skew_metric, 3) if skew_metric is not None else None,
+                        'ROI_Monthly': round(roi_monthly, 3),
+                        'AvgHold_days': round(hold_days, 1),
+                        'P_Daytrade': round(p_daytrade, 3),
+                        'IV': round(avg_iv, 3),
+                        'Underlying': round(underlying_price, 2),
+                        'BE': round(be_price, 2)
+                    })
+                    log_pass(f"MC accepted: PoP {pop_mc:.3f}, EV {ev:.2f}, ROI/mo {roi_monthly:.3f}", contract.symbol, target_exp, spread_desc)
+                    mc_stats['accepted'] += 1
+                               
             # Bull Put Credit: short higher strike put, long lower strike put
             if trend == 'down':
                 log_filter("Trend down; skipping bull put candidates", contract.symbol, target_exp, "Bull Put")
@@ -1538,46 +1541,46 @@ async def main():
                         log_filter(f"Credit {credit:.2f} <= MIN_ENTRY {MIN_ENTRY}", contract.symbol, target_exp, spread_desc)
                         continue
 
-                        width = short_leg['strike'] - long_leg['strike']
-                        if width < MIN_WIDTH or width > MAX_WIDTH:
-                            log_filter(f"Width {width:.2f} outside {MIN_WIDTH}-{MAX_WIDTH}", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if width <= 0:
-                            log_filter("Width non-positive", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if credit >= width:  # inverted/arb spread; data likely stale
-                            log_filter(f"Credit {credit:.2f} >= width {width:.2f}", contract.symbol, target_exp, spread_desc)
-                            continue
+                    width = short_leg['strike'] - long_leg['strike']
+                    if width < MIN_WIDTH or width > MAX_WIDTH:
+                        log_filter(f"Width {width:.2f} outside {MIN_WIDTH}-{MAX_WIDTH}", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if width <= 0:
+                        log_filter("Width non-positive", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if credit >= width:  # inverted/arb spread; data likely stale
+                        log_filter(f"Credit {credit:.2f} >= width {width:.2f}", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        max_loss = width - credit
-                        if max_loss <= 0:
-                            log_filter(f"Max loss {max_loss:.2f} <= 0", contract.symbol, target_exp, spread_desc)
-                            continue
+                    max_loss = width - credit
+                    if max_loss <= 0:
+                        log_filter(f"Max loss {max_loss:.2f} <= 0", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        be_price = short_leg['strike'] - credit
-                        avg_iv = (long_leg['iv'] + short_leg['iv']) / 2
-                        skew_capture = short_leg['iv'] - long_leg['iv']
-                        sigma_input = avg_iv if avg_iv and avg_iv > 0 else sigma_fallback
-                        if sigma_input is None or sigma_input <= 0:
-                            log_filter("No usable sigma for MC", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if skew_capture < MIN_SKEW_CAPTURE_BULL:
-                            log_filter(f"Skew capture {skew_capture:.3f} < {MIN_SKEW_CAPTURE_BULL}", contract.symbol, target_exp, spread_desc)
-                            continue
+                    be_price = short_leg['strike'] - credit
+                    avg_iv = (long_leg['iv'] + short_leg['iv']) / 2
+                    skew_capture = short_leg['iv'] - long_leg['iv']
+                    sigma_input = avg_iv if avg_iv and avg_iv > 0 else sigma_fallback
+                    if sigma_input is None or sigma_input <= 0:
+                        log_filter("No usable sigma for MC", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if skew_capture < MIN_SKEW_CAPTURE_BULL:
+                        log_filter(f"Skew capture {skew_capture:.3f} < {MIN_SKEW_CAPTURE_BULL}", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        # Canonical put vertical: long higher, short lower
-                        long_strike = short_leg['strike']   # higher
-                        short_strike = long_leg['strike']   # lower
+                    # Canonical put vertical: long higher, short lower
+                    long_strike = short_leg['strike']   # higher
+                    short_strike = long_leg['strike']   # lower
 
-                        log_pass("Running MC", contract.symbol, target_exp, spread_desc)
-                        mc_stats['mc_runs'] += 1
-                        pop_mc, ev_mc, avg_ht, p_daytrade = simulate_vertical_pop_ev_torch(
-                            S0=underlying_price,
-                            r=RISK_FREE_RATE,
-                            sigma=sigma_input,
-                            T=T,
-                            long_strike=long_strike,
-                            short_strike=short_strike,
+                    log_pass("Running MC", contract.symbol, target_exp, spread_desc)
+                    mc_stats['mc_runs'] += 1
+                    pop_mc, ev_mc, avg_ht, p_daytrade = simulate_vertical_pop_ev_torch(
+                        S0=underlying_price,
+                        r=RISK_FREE_RATE,
+                        sigma=sigma_input,
+                        T=T,
+                        long_strike=long_strike,
+                        short_strike=short_strike,
                         right='P',
                         entry=credit,
                         max_profit=credit,
@@ -1587,65 +1590,65 @@ async def main():
                         sl_frac=MC_SL_CREDIT_MULT,
                         n_paths=MC_N_PATHS,
                         n_steps=MC_N_STEPS,
-                            daytrade_threshold_days=MC_DAYTRADE_THRESHOLD_DAYS,
-                            device=None,
-                            mu=mu_param,
-                            realized_vol_frac=rv_frac_param
-                        )
+                        daytrade_threshold_days=MC_DAYTRADE_THRESHOLD_DAYS,
+                        device=None,
+                        mu=mu_param,
+                        realized_vol_frac=rv_frac_param
+                    )
 
-                        if pop_mc <= MIN_POP:
-                            mc_stats['pop_fail'] += 1
-                            log_filter(f"PoP {pop_mc:.3f} <= {MIN_POP}", contract.symbol, target_exp, spread_desc)
-                            continue
+                    if pop_mc <= MIN_POP:
+                        mc_stats['pop_fail'] += 1
+                        log_filter(f"PoP {pop_mc:.3f} <= {MIN_POP}", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        ev = ev_mc
-                        if REQUIRE_POSITIVE_EV and ev <= 0:
-                            mc_stats['ev_fail'] += 1
-                            log_filter(f"EV {ev:.3f} <= 0 with positive EV required", contract.symbol, target_exp, spread_desc)
-                            continue
+                    ev = ev_mc
+                    if REQUIRE_POSITIVE_EV and ev <= 0:
+                        mc_stats['ev_fail'] += 1
+                        log_filter(f"EV {ev:.3f} <= 0 with positive EV required", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        roi_trade = ev / max_loss
-                        ev_per_risk = roi_trade
-                        roi_monthly = roi_trade * (30.0 / days_to_expiry)
+                    roi_trade = ev / max_loss
+                    ev_per_risk = roi_trade
+                    roi_monthly = roi_trade * (30.0 / days_to_expiry)
 
-                        if ev < MIN_EV:
-                            log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if ev_per_risk < MIN_EV_PER_RISK:
-                            log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
-                            continue
-                        hold_days = avg_ht * 365.0
-                        if hold_days < MIN_HOLD_DAYS:
-                            mc_stats['hold_fail'] += 1
-                            log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if roi_monthly < TARGET_MONTHLY_RETURN:
-                            mc_stats['roi_fail'] += 1
-                            log_filter(f"ROI/month {roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}", contract.symbol, target_exp, spread_desc)
-                            continue
+                    if ev < MIN_EV:
+                        log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if ev_per_risk < MIN_EV_PER_RISK:
+                        log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
+                        continue
+                    hold_days = avg_ht * 365.0
+                    if hold_days < MIN_HOLD_DAYS:
+                        mc_stats['hold_fail'] += 1
+                        log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if roi_monthly < TARGET_MONTHLY_RETURN:
+                        mc_stats['roi_fail'] += 1
+                        log_filter(f"ROI/month {roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        opportunities.append({
-                            'Symbol': contract.symbol,
-                            'Expiry': target_exp,
-                            'Strategy': f"{long_leg['strike']}/{short_leg['strike']} Bull Put",
-                            'Entry': round(credit, 2),
-                            'Entry Type': 'Credit',
-                            'Max Profit': round(credit, 2),
-                            'Max Loss': round(max_loss, 2),
-                            'PoP': round(pop_mc, 3),
-                            'EV': round(ev, 2),
-                            'EV_Per_Risk': round(ev_per_risk, 3),
-                            'Skew_Capture': round(skew_capture, 3),
-                            'Skew_Expiry': round(skew_metric, 3) if skew_metric is not None else None,
-                            'ROI_Monthly': round(roi_monthly, 3),
-                            'AvgHold_days': round(hold_days, 1),
-                            'P_Daytrade': round(p_daytrade, 3),
-                            'IV': round(avg_iv, 3),
-                            'Underlying': round(underlying_price, 2),
-                            'BE': round(be_price, 2)
-                        })
-                        log_pass(f"MC accepted: PoP {pop_mc:.3f}, EV {ev:.2f}, ROI/mo {roi_monthly:.3f}", contract.symbol, target_exp, spread_desc)
-                        mc_stats['accepted'] += 1
+                    opportunities.append({
+                        'Symbol': contract.symbol,
+                        'Expiry': target_exp,
+                        'Strategy': f"{long_leg['strike']}/{short_leg['strike']} Bull Put",
+                        'Entry': round(credit, 2),
+                        'Entry Type': 'Credit',
+                        'Max Profit': round(credit, 2),
+                        'Max Loss': round(max_loss, 2),
+                        'PoP': round(pop_mc, 3),
+                        'EV': round(ev, 2),
+                        'EV_Per_Risk': round(ev_per_risk, 3),
+                        'Skew_Capture': round(skew_capture, 3),
+                        'Skew_Expiry': round(skew_metric, 3) if skew_metric is not None else None,
+                        'ROI_Monthly': round(roi_monthly, 3),
+                        'AvgHold_days': round(hold_days, 1),
+                        'P_Daytrade': round(p_daytrade, 3),
+                        'IV': round(avg_iv, 3),
+                        'Underlying': round(underlying_price, 2),
+                        'BE': round(be_price, 2)
+                    })
+                    log_pass(f"MC accepted: PoP {pop_mc:.3f}, EV {ev:.2f}, ROI/mo {roi_monthly:.3f}", contract.symbol, target_exp, spread_desc)
+                    mc_stats['accepted'] += 1
                                     
             # Bear Put Debit: long higher strike put, short lower strike put
             if trend == 'up':
@@ -1677,107 +1680,107 @@ async def main():
                         log_filter(f"Cost {cost:.2f} outside ({MIN_ENTRY}, {MAX_DEBIT})", contract.symbol, target_exp, spread_desc)
                         continue
 
-                        width = long_leg['strike'] - short_leg['strike']
-                        if width < MIN_WIDTH or width > MAX_WIDTH:
-                            log_filter(f"Width {width:.2f} outside {MIN_WIDTH}-{MAX_WIDTH}", contract.symbol, target_exp, spread_desc)
-                            continue
-                        max_profit = width - cost
-                        if max_profit <= 0:
-                            log_filter("Non-positive max profit", contract.symbol, target_exp, spread_desc)
-                            continue
+                    width = long_leg['strike'] - short_leg['strike']
+                    if width < MIN_WIDTH or width > MAX_WIDTH:
+                        log_filter(f"Width {width:.2f} outside {MIN_WIDTH}-{MAX_WIDTH}", contract.symbol, target_exp, spread_desc)
+                        continue
+                    max_profit = width - cost
+                    if max_profit <= 0:
+                        log_filter("Non-positive max profit", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        be_price = long_leg['strike'] - cost
-                        avg_iv = (long_leg['iv'] + short_leg['iv']) / 2
-                        skew_capture = short_leg['iv'] - long_leg['iv']
-                        sigma_input = avg_iv if avg_iv and avg_iv > 0 else sigma_fallback
-                        if sigma_input is None or sigma_input <= 0:
-                            log_filter("No usable sigma for MC", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if skew_capture < MIN_SKEW_CAPTURE_BEAR:
-                            log_filter(f"Skew capture {skew_capture:.3f} < {MIN_SKEW_CAPTURE_BEAR}", contract.symbol, target_exp, spread_desc)
-                            continue
+                    be_price = long_leg['strike'] - cost
+                    avg_iv = (long_leg['iv'] + short_leg['iv']) / 2
+                    skew_capture = short_leg['iv'] - long_leg['iv']
+                    sigma_input = avg_iv if avg_iv and avg_iv > 0 else sigma_fallback
+                    if sigma_input is None or sigma_input <= 0:
+                        log_filter("No usable sigma for MC", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if skew_capture < MIN_SKEW_CAPTURE_BEAR:
+                        log_filter(f"Skew capture {skew_capture:.3f} < {MIN_SKEW_CAPTURE_BEAR}", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        # Canonical put vertical: long higher, short lower
-                        long_strike = long_leg['strike']    # higher
-                        short_strike = short_leg['strike']  # lower
+                    # Canonical put vertical: long higher, short lower
+                    long_strike = long_leg['strike']    # higher
+                    short_strike = short_leg['strike']  # lower
 
-                        log_pass("Running MC", contract.symbol, target_exp, spread_desc)
-                        mc_stats['mc_runs'] += 1
-                        pop_mc, ev_mc, avg_ht, p_daytrade = simulate_vertical_pop_ev_torch(
-                            S0=underlying_price,
-                            r=RISK_FREE_RATE,
-                            sigma=sigma_input,
-                            T=T,
-                            long_strike=long_strike,
-                            short_strike=short_strike,
+                    log_pass("Running MC", contract.symbol, target_exp, spread_desc)
+                    mc_stats['mc_runs'] += 1
+                    pop_mc, ev_mc, avg_ht, p_daytrade = simulate_vertical_pop_ev_torch(
+                        S0=underlying_price,
+                        r=RISK_FREE_RATE,
+                        sigma=sigma_input,
+                        T=T,
+                        long_strike=long_strike,
+                        short_strike=short_strike,
                         right='P',
                         entry=cost,
                         max_profit=max_profit,
-                        max_loss=cost,          # debit = max loss
+                        max_loss=cost,          
                         entry_type='Debit',
                         tp_frac=MC_TP_FRAC,
                         sl_frac=MC_SL_DEBIT_FRAC,
                         n_paths=MC_N_PATHS,
                         n_steps=MC_N_STEPS,
-                            daytrade_threshold_days=MC_DAYTRADE_THRESHOLD_DAYS,
-                            device=None,
-                            mu=mu_param,
-                            realized_vol_frac=rv_frac_param
-                        )
+                        daytrade_threshold_days=MC_DAYTRADE_THRESHOLD_DAYS,
+                        device=None,
+                        mu=mu_param,
+                        realized_vol_frac=rv_frac_param
+                    )
 
-                        if pop_mc <= MIN_POP:
-                            mc_stats['pop_fail'] += 1
-                            log_filter(f"PoP {pop_mc:.3f} <= {MIN_POP}", contract.symbol, target_exp, spread_desc)
-                            continue
+                    if pop_mc <= MIN_POP:
+                        mc_stats['pop_fail'] += 1
+                        log_filter(f"PoP {pop_mc:.3f} <= {MIN_POP}", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        ev = ev_mc
-                        if REQUIRE_POSITIVE_EV and ev <= 0:
-                            mc_stats['ev_fail'] += 1
-                            log_filter(f"EV {ev:.3f} <= 0 with positive EV required", contract.symbol, target_exp, spread_desc)
-                            continue
+                    ev = ev_mc
+                    if REQUIRE_POSITIVE_EV and ev <= 0:
+                        mc_stats['ev_fail'] += 1
+                        log_filter(f"EV {ev:.3f} <= 0 with positive EV required", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        roi_trade = ev / cost
-                        ev_per_risk = roi_trade
-                        roi_monthly = roi_trade * (30.0 / days_to_expiry)
+                    roi_trade = ev / cost
+                    ev_per_risk = roi_trade
+                    roi_monthly = roi_trade * (30.0 / days_to_expiry)
 
-                        if ev < MIN_EV:
-                            log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if ev_per_risk < MIN_EV_PER_RISK:
-                            log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
-                            continue
-                        hold_days = avg_ht * 365.0
-                        if hold_days < MIN_HOLD_DAYS:
-                            mc_stats['hold_fail'] += 1
-                            log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
-                            continue
-                        if roi_monthly < TARGET_MONTHLY_RETURN:
-                            mc_stats['roi_fail'] += 1
-                            log_filter(f"ROI/month {roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}", contract.symbol, target_exp, spread_desc)
-                            continue
+                    if ev < MIN_EV:
+                        log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if ev_per_risk < MIN_EV_PER_RISK:
+                        log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
+                        continue
+                    hold_days = avg_ht * 365.0
+                    if hold_days < MIN_HOLD_DAYS:
+                        mc_stats['hold_fail'] += 1
+                        log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if roi_monthly < TARGET_MONTHLY_RETURN:
+                        mc_stats['roi_fail'] += 1
+                        log_filter(f"ROI/month {roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}", contract.symbol, target_exp, spread_desc)
+                        continue
 
-                        opportunities.append({
-                            'Symbol': contract.symbol,
-                            'Expiry': target_exp,
-                            'Strategy': f"{short_leg['strike']}/{long_leg['strike']} Bear Put",
-                            'Entry': round(cost, 2),
-                            'Entry Type': 'Debit',
-                            'Max Profit': round(max_profit, 2),
-                            'Max Loss': round(cost, 2),
-                            'PoP': round(pop_mc, 3),
-                            'EV': round(ev, 2),
-                            'EV_Per_Risk': round(ev_per_risk, 3),
-                            'Skew_Capture': round(skew_capture, 3),
-                            'Skew_Expiry': round(skew_metric, 3) if skew_metric is not None else None,
-                            'ROI_Monthly': round(roi_monthly, 3),
-                            'AvgHold_days': round(hold_days, 1),
-                            'P_Daytrade': round(p_daytrade, 3),
-                            'IV': round(avg_iv, 3),
-                            'Underlying': round(underlying_price, 2),
-                            'BE': round(be_price, 2)
-                        })
-                        log_pass(f"MC accepted: PoP {pop_mc:.3f}, EV {ev:.2f}, ROI/mo {roi_monthly:.3f}", contract.symbol, target_exp, spread_desc)
-                        mc_stats['accepted'] += 1
+                    opportunities.append({
+                        'Symbol': contract.symbol,
+                        'Expiry': target_exp,
+                        'Strategy': f"{short_leg['strike']}/{long_leg['strike']} Bear Put",
+                        'Entry': round(cost, 2),
+                        'Entry Type': 'Debit',
+                        'Max Profit': round(max_profit, 2),
+                        'Max Loss': round(cost, 2),
+                        'PoP': round(pop_mc, 3),
+                        'EV': round(ev, 2),
+                        'EV_Per_Risk': round(ev_per_risk, 3),
+                        'Skew_Capture': round(skew_capture, 3),
+                        'Skew_Expiry': round(skew_metric, 3) if skew_metric is not None else None,
+                        'ROI_Monthly': round(roi_monthly, 3),
+                        'AvgHold_days': round(hold_days, 1),
+                        'P_Daytrade': round(p_daytrade, 3),
+                        'IV': round(avg_iv, 3),
+                        'Underlying': round(underlying_price, 2),
+                        'BE': round(be_price, 2)
+                    })
+                    log_pass(f"MC accepted: PoP {pop_mc:.3f}, EV {ev:.2f}, ROI/mo {roi_monthly:.3f}", contract.symbol, target_exp, spread_desc)
+                    mc_stats['accepted'] += 1
                     mc_stats['accepted'] += 1
 
             if bull_call_bar: bull_call_bar.close()
