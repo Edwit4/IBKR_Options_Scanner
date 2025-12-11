@@ -36,11 +36,14 @@ CLIENT_ID = 99
 
 # Strategy Parameters
 MAX_DEBIT = 3.00       # Max cost
-MIN_OPT_VOL = 1        # Liquidity filter for individual legs
-MIN_POP = 0.0         # Min Probability of Profit
+MIN_OPT_VOL = 5        # Liquidity filter for individual legs
+MIN_POP = 0.2         # Min Probability of Profit
 RISK_FREE_RATE = 0.044 # ~4.4% (Used if IBKR yields are unavailable)
 SCAN_LIMIT = 25         # Limit scanner result count to avoid pacing issues
 MIN_PRICE = 10        # Skip penny/small names that often lack options data; scanner uses this floor
+MIN_ENTRY = 0.15       # Min absolute entry price (debit/credit)
+MIN_EV_PER_RISK = 0.12  # Filter on EV/Risk; set >0 to require edge per unit risk
+MIN_EV = 0.1           # Filter on absolute EV; set >0 to require positive expectation
 SCANNER_CODES = ['OPT_VOLUME_MOST_ACTIVE',
                  'HOT_BY_OPT_VOLUME',
                  'HIGH_OPT_IMP_VOLAT', 
@@ -56,14 +59,16 @@ VOL_PREMIUM_MIN = 1.0  # require IV/realized >= value at symbol level to proceed
 
 # MC Params
 MC_TP_FRAC = 0.5        # take profit at percent of max profit
-MC_SL_FRAC = 0.25        # stop at percent of max loss
+MC_SL_FRAC = 0.25        # stop at percent of max loss (legacy)
+MC_SL_CREDIT_MULT = 2.0  # stop-loss multiple of credit received for credit spreads
+MC_SL_DEBIT_FRAC = 0.5   # stop-loss fraction of debit paid for debit spreads
 MC_N_PATHS = 500000
 MC_N_STEPS = 100
 MC_DAYTRADE_THRESHOLD_DAYS = 1.0
 MIN_HOLD_DAYS = 1.0     # skip spreads whose expected hold is under 1 day
 API_PAUSE_SEC = 0.15  # small pause between IBKR requests to avoid pacing/disconnects
-MIN_WIDTH = 3.0
-MAX_WIDTH = 5.0
+MIN_WIDTH = 2.0
+MAX_WIDTH = 10.0
 
 # Real-world drift & vol-premium assumptions (tweak these)
 USE_REAL_WORLD_DRIFT = True
@@ -84,8 +89,8 @@ MIN_SKEW_CAPTURE_BEAR = -0.20 # skew capture floor for bear structures (allow sl
 MU_TREND_THRESH = 0.08        # annual drift threshold for up/down classification 
 MOMENTUM_WINDOW_DAYS = 20     # short-term momentum window for alignment
 FILTER_VERBOSE = True         # emit reasons when candidates/spreads are filtered out
-TIGHT_MAX_ABS = 3
-TIGHT_MAX_REL = 3
+TIGHT_MAX_ABS = 0.07
+TIGHT_MAX_REL = 0.15
 
 # ==========================================
 def log_filter(reason, symbol=None, expiry=None, spread=None):
@@ -1254,8 +1259,8 @@ async def main():
                         continue
 
                     cost = long_leg['ask'] - short_leg['bid']
-                    if not (0 < cost < MAX_DEBIT):
-                        log_filter(f"Cost {cost:.2f} outside (0, {MAX_DEBIT})", contract.symbol, target_exp, spread_desc)
+                    if not (MIN_ENTRY < cost < MAX_DEBIT):
+                        log_filter(f"Cost {cost:.2f} outside ({MIN_ENTRY}, {MAX_DEBIT})", contract.symbol, target_exp, spread_desc)
                         continue
 
                     width = short_leg['strike'] - long_leg['strike']
@@ -1298,7 +1303,7 @@ async def main():
                         max_loss=cost,        # debit = max loss
                         entry_type='Debit',
                         tp_frac=MC_TP_FRAC,
-                        sl_frac=MC_SL_FRAC,
+                        sl_frac=MC_SL_DEBIT_FRAC,
                         n_paths=MC_N_PATHS,
                         n_steps=MC_N_STEPS,
                         daytrade_threshold_days=MC_DAYTRADE_THRESHOLD_DAYS,
@@ -1321,6 +1326,13 @@ async def main():
                     roi_trade = ev / cost
                     ev_per_risk = roi_trade
                     roi_monthly = roi_trade * (30.0 / days_to_expiry)
+
+                    if ev < MIN_EV:
+                        log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
+                        continue
+                    if ev_per_risk < MIN_EV_PER_RISK:
+                        log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
+                        continue
 
                     hold_days = avg_ht * 365.0
                     if hold_days < MIN_HOLD_DAYS:
@@ -1381,10 +1393,10 @@ async def main():
                                 contract.symbol, target_exp, spread_desc)
                             continue
 
-                        credit = short_leg['bid'] - long_leg['ask']
-                        if credit <= 0:
-                            log_filter(f"Credit {credit:.2f} <= 0", contract.symbol, target_exp, spread_desc)
-                            continue
+                    credit = short_leg['bid'] - long_leg['ask']
+                    if credit <= MIN_ENTRY:
+                        log_filter(f"Credit {credit:.2f} <= MIN_ENTRY {MIN_ENTRY}", contract.symbol, target_exp, spread_desc)
+                        continue
 
                         width = long_leg['strike'] - short_leg['strike']
                         if width < MIN_WIDTH or width > MAX_WIDTH:
@@ -1426,15 +1438,15 @@ async def main():
                             T=T,
                             long_strike=long_strike,
                             short_strike=short_strike,
-                            right='C',
-                            entry=credit,
-                            max_profit=credit,
-                            max_loss=max_loss,
-                            entry_type='Credit',  # short the canonical vertical
-                            tp_frac=MC_TP_FRAC,
-                            sl_frac=MC_SL_FRAC,
-                            n_paths=MC_N_PATHS,
-                            n_steps=MC_N_STEPS,
+                        right='C',
+                        entry=credit,
+                        max_profit=credit,
+                        max_loss=max_loss,
+                        entry_type='Credit',  # short the canonical vertical
+                        tp_frac=MC_TP_FRAC,
+                        sl_frac=MC_SL_CREDIT_MULT,
+                        n_paths=MC_N_PATHS,
+                        n_steps=MC_N_STEPS,
                             daytrade_threshold_days=MC_DAYTRADE_THRESHOLD_DAYS,
                             device=None,
                             mu=mu_param,
@@ -1457,6 +1469,12 @@ async def main():
                         ev_per_risk = roi_trade
                         roi_monthly = roi_trade * (30.0 / days_to_expiry)
 
+                        if ev < MIN_EV:
+                            log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
+                            continue
+                        if ev_per_risk < MIN_EV_PER_RISK:
+                            log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
+                            continue
                         hold_days = avg_ht * 365.0
                         if hold_days < MIN_HOLD_DAYS:
                             mc_stats['hold_fail'] += 1
@@ -1515,10 +1533,10 @@ async def main():
                             contract.symbol, target_exp, spread_desc)
                         continue
 
-                        credit = short_leg['bid'] - long_leg['ask']
-                        if credit <= 0:
-                            log_filter(f"Credit {credit:.2f} <= 0", contract.symbol, target_exp, spread_desc)
-                            continue
+                    credit = short_leg['bid'] - long_leg['ask']
+                    if credit <= MIN_ENTRY:
+                        log_filter(f"Credit {credit:.2f} <= MIN_ENTRY {MIN_ENTRY}", contract.symbol, target_exp, spread_desc)
+                        continue
 
                         width = short_leg['strike'] - long_leg['strike']
                         if width < MIN_WIDTH or width > MAX_WIDTH:
@@ -1560,15 +1578,15 @@ async def main():
                             T=T,
                             long_strike=long_strike,
                             short_strike=short_strike,
-                            right='P',
-                            entry=credit,
-                            max_profit=credit,
-                            max_loss=max_loss,
-                            entry_type='Credit',
-                            tp_frac=MC_TP_FRAC,
-                            sl_frac=MC_SL_FRAC,
-                            n_paths=MC_N_PATHS,
-                            n_steps=MC_N_STEPS,
+                        right='P',
+                        entry=credit,
+                        max_profit=credit,
+                        max_loss=max_loss,
+                        entry_type='Credit',
+                        tp_frac=MC_TP_FRAC,
+                        sl_frac=MC_SL_CREDIT_MULT,
+                        n_paths=MC_N_PATHS,
+                        n_steps=MC_N_STEPS,
                             daytrade_threshold_days=MC_DAYTRADE_THRESHOLD_DAYS,
                             device=None,
                             mu=mu_param,
@@ -1590,6 +1608,12 @@ async def main():
                         ev_per_risk = roi_trade
                         roi_monthly = roi_trade * (30.0 / days_to_expiry)
 
+                        if ev < MIN_EV:
+                            log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
+                            continue
+                        if ev_per_risk < MIN_EV_PER_RISK:
+                            log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
+                            continue
                         hold_days = avg_ht * 365.0
                         if hold_days < MIN_HOLD_DAYS:
                             mc_stats['hold_fail'] += 1
@@ -1648,10 +1672,10 @@ async def main():
                                 contract.symbol, target_exp, spread_desc)
                             continue
 
-                        cost = long_leg['ask'] - short_leg['bid']
-                        if not (0 < cost < MAX_DEBIT):
-                            log_filter(f"Cost {cost:.2f} outside (0, {MAX_DEBIT})", contract.symbol, target_exp, spread_desc)
-                            continue
+                    cost = long_leg['ask'] - short_leg['bid']
+                    if not (MIN_ENTRY < cost < MAX_DEBIT):
+                        log_filter(f"Cost {cost:.2f} outside ({MIN_ENTRY}, {MAX_DEBIT})", contract.symbol, target_exp, spread_desc)
+                        continue
 
                         width = long_leg['strike'] - short_leg['strike']
                         if width < MIN_WIDTH or width > MAX_WIDTH:
@@ -1686,15 +1710,15 @@ async def main():
                             T=T,
                             long_strike=long_strike,
                             short_strike=short_strike,
-                            right='P',
-                            entry=cost,
-                            max_profit=max_profit,
-                            max_loss=cost,          # debit = max loss
-                            entry_type='Debit',
-                            tp_frac=MC_TP_FRAC,
-                            sl_frac=MC_SL_FRAC,
-                            n_paths=MC_N_PATHS,
-                            n_steps=MC_N_STEPS,
+                        right='P',
+                        entry=cost,
+                        max_profit=max_profit,
+                        max_loss=cost,          # debit = max loss
+                        entry_type='Debit',
+                        tp_frac=MC_TP_FRAC,
+                        sl_frac=MC_SL_DEBIT_FRAC,
+                        n_paths=MC_N_PATHS,
+                        n_steps=MC_N_STEPS,
                             daytrade_threshold_days=MC_DAYTRADE_THRESHOLD_DAYS,
                             device=None,
                             mu=mu_param,
@@ -1716,6 +1740,12 @@ async def main():
                         ev_per_risk = roi_trade
                         roi_monthly = roi_trade * (30.0 / days_to_expiry)
 
+                        if ev < MIN_EV:
+                            log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
+                            continue
+                        if ev_per_risk < MIN_EV_PER_RISK:
+                            log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
+                            continue
                         hold_days = avg_ht * 365.0
                         if hold_days < MIN_HOLD_DAYS:
                             mc_stats['hold_fail'] += 1
