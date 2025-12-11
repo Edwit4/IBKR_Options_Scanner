@@ -183,6 +183,12 @@ def simulate_vertical_pop_ev_torch(
     else:
         sigma_path = sigma * realized_vol_frac
 
+    # Rate used for BS pricing; follow calibrated drift when provided
+    if mu is None:
+        r_pricing = r
+    else:
+        r_pricing = mu_t
+
     tp_level = tp_frac * max_profit
     sl_level = -sl_frac * max_loss
 
@@ -222,7 +228,7 @@ def simulate_vertical_pop_ev_torch(
 
         # Price vertical for alive paths
         vert_val = vertical_price_torch(
-            S_new, T_remaining, r, sigma, long_strike, short_strike, right
+            S_new, T_remaining, r_pricing, sigma, long_strike, short_strike, right
         )
 
         if entry_type == 'Debit':
