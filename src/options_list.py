@@ -40,7 +40,7 @@ MAX_DEBIT = 3.00       # Max cost
 MIN_OPT_VOL = 5        # Liquidity filter for individual legs
 MIN_POP = 0.2         # Min Probability of Profit
 RISK_FREE_RATE = 0.044 # ~4.4% (Used if IBKR yields are unavailable)
-SCAN_LIMIT = 25         # Limit scanner result count to avoid pacing issues
+SCAN_LIMIT = 50         # Limit scanner result count to avoid pacing issues
 MIN_PRICE = 10        # Skip penny/small names that often lack options data; scanner uses this floor
 MIN_ENTRY = 0.15       # Min absolute entry price (debit/credit)
 MIN_EV_PER_RISK = 0.12  # Filter on EV/Risk; set >0 to require edge per unit risk
@@ -54,7 +54,7 @@ SCANNER_CODES = ['OPT_VOLUME_MOST_ACTIVE',
 MANUAL_SYMBOLS = []   # Optional override list; if non-empty, skip scanner and use this list
 # Portfolio-level risk budget (average fraction of capital actually at risk in these spreads)
 PORTFOLIO_RISK_BUDGET_FRAC = 0.4   # example: 40% of capital is in spreads on average
-TARGET_MONTHLY_RETURN = 0.005   # Percent per month, as a fraction
+TARGET_MONTHLY_RETURN = 0.05   # Percent per month, as a fraction
 REQUIRE_POSITIVE_EV = True     # Only keep spreads with positive expectation
 MIN_DAYS = 0
 MAX_DAYS = 60
@@ -62,7 +62,6 @@ VOL_PREMIUM_MIN = 1.0  # require IV/realized >= value at symbol level to proceed
 
 # MC Params
 MC_TP_FRAC = 0.5        # take profit at percent of max profit
-MC_SL_FRAC = 0.25        # stop at percent of max loss (legacy)
 MC_SL_CREDIT_MULT = 2.0  # stop-loss multiple of credit received for credit spreads
 MC_SL_DEBIT_FRAC = 0.5   # stop-loss fraction of debit paid for debit spreads
 MC_N_PATHS = 500000
