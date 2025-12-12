@@ -31,7 +31,8 @@ logging.getLogger('ib_async.client').setLevel(logging.CRITICAL)
 
 # Connection settings
 HOST = '127.0.0.1'
-PORT = 7496
+PORT = 7496 # Live trading
+#PORT = 7497 # Paper trading
 CLIENT_ID = 99
 
 # Strategy Parameters
@@ -51,6 +52,8 @@ SCANNER_CODES = ['OPT_VOLUME_MOST_ACTIVE',
                  'OPT_OPEN_INTEREST_MOST_ACTIVE', 
                  'MOST_ACTIVE'] 
 MANUAL_SYMBOLS = []   # Optional override list; if non-empty, skip scanner and use this list
+# Portfolio-level risk budget (average fraction of capital actually at risk in these spreads)
+PORTFOLIO_RISK_BUDGET_FRAC = 0.4   # example: 40% of capital is in spreads on average
 TARGET_MONTHLY_RETURN = 0.005   # Percent per month, as a fraction
 REQUIRE_POSITIVE_EV = True     # Only keep spreads with positive expectation
 MIN_DAYS = 0
@@ -70,6 +73,9 @@ API_PAUSE_SEC = 0.15  # small pause between IBKR requests to avoid pacing/discon
 MIN_WIDTH = 2.0
 MAX_WIDTH = 10.0
 
+# Paths
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 # Real-world drift & vol-premium assumptions (tweak these)
 USE_REAL_WORLD_DRIFT = True
 MU_DRIFT = 0.10          # 10% annual drift for bullish underlyings, example
@@ -78,7 +84,7 @@ USE_VOL_RISK_PREMIUM = False
 REALIZED_VOL_FRACTION = 0.7   # realized_vol = 0.7 * implied_vol (if you turn this on)
 MU_SIGMA_YEARS = 4.0          # lookback for drift/vol calibration
 REALIZED_VOL_YEARS = 2.0      # lookback for realized vs implied ratio
-CALIBRATION_CACHE_FILE = Path("calibration_cache.json")
+CALIBRATION_CACHE_FILE = BASE_DIR / "calibration_cache.json"
 REALIZED_FRAC_MIN = 0.3
 REALIZED_FRAC_MAX = 1.5
 CALIBRATION_MAX_AGE_DAYS = 3
@@ -91,6 +97,7 @@ MOMENTUM_WINDOW_DAYS = 20     # short-term momentum window for alignment
 FILTER_VERBOSE = True         # emit reasons when candidates/spreads are filtered out
 TIGHT_MAX_ABS = 0.07
 TIGHT_MAX_REL = 0.15
+OUTPUT_DIR = BASE_DIR / "output"
 
 # ==========================================
 def log_filter(reason, symbol=None, expiry=None, spread=None):
@@ -1326,9 +1333,20 @@ async def main():
                         log_filter(f"EV {ev:.3f} <= 0 with positive EV required", contract.symbol, target_exp, spread_desc)
                         continue
 
-                    roi_trade = ev / cost
-                    ev_per_risk = roi_trade
-                    roi_monthly = roi_trade * (30.0 / days_to_expiry)
+                    hold_days = avg_ht * 365.0
+                    if hold_days < MIN_HOLD_DAYS:
+                        mc_stats['hold_fail'] += 1
+                        log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
+                        continue
+
+                    risk = cost  # debit: capital at risk is the cost
+
+                    roi_trade = ev / risk                 # expected return on risk over trade life
+                    ev_per_risk = roi_trade               # keep this metric
+                    roi_monthly = roi_trade * (30.0 / hold_days)
+
+                    # Convert to portfolio-level monthly return, given average risk budget
+                    portfolio_roi_monthly = roi_monthly * PORTFOLIO_RISK_BUDGET_FRAC
 
                     if ev < MIN_EV:
                         log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
@@ -1336,15 +1354,12 @@ async def main():
                     if ev_per_risk < MIN_EV_PER_RISK:
                         log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
                         continue
-
-                    hold_days = avg_ht * 365.0
-                    if hold_days < MIN_HOLD_DAYS:
-                        mc_stats['hold_fail'] += 1
-                        log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
-                        continue
-                    if roi_monthly < TARGET_MONTHLY_RETURN:
+                    if portfolio_roi_monthly < TARGET_MONTHLY_RETURN:
                         mc_stats['roi_fail'] += 1
-                        log_filter(f"ROI/month {roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}", contract.symbol, target_exp, spread_desc)
+                        log_filter(
+                            f"Portfolio ROI/month {portfolio_roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}",
+                            contract.symbol, target_exp, spread_desc
+                        )
                         continue
 
                     opportunities.append({
@@ -1358,10 +1373,9 @@ async def main():
                         'PoP': round(pop_mc, 3),
                         'EV': round(ev, 2),
                         'EV_Per_Risk': round(ev_per_risk, 3),
-                        'Skew_Capture': round(skew_capture, 3),
-                        'Skew_Expiry': round(skew_metric, 3) if skew_metric is not None else None,
                         'Trend': trend,
                         'ROI_Monthly': round(roi_monthly, 3),
+                        'Portfolio_ROI_Monthly': round(portfolio_roi_monthly, 3),
                         'AvgHold_days': round(hold_days, 1),
                         'P_Daytrade': round(p_daytrade, 3),
                         'IV': round(avg_iv, 3),
@@ -1468,9 +1482,19 @@ async def main():
                         log_filter(f"EV {ev:.3f} <= 0 with positive EV required", contract.symbol, target_exp, spread_desc)
                         continue
 
-                    roi_trade = ev / max_loss   # margin ≈ max_loss
+                    hold_days = avg_ht * 365.0
+                    if hold_days < MIN_HOLD_DAYS:
+                        mc_stats['hold_fail'] += 1
+                        log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
+                        continue
+
+                    risk = max_loss  # credit: capital at risk ≈ max loss (margin)
+
+                    roi_trade = ev / risk
                     ev_per_risk = roi_trade
-                    roi_monthly = roi_trade * (30.0 / days_to_expiry)
+                    roi_monthly = roi_trade * (30.0 / hold_days)
+
+                    portfolio_roi_monthly = roi_monthly * PORTFOLIO_RISK_BUDGET_FRAC
 
                     if ev < MIN_EV:
                         log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
@@ -1478,14 +1502,12 @@ async def main():
                     if ev_per_risk < MIN_EV_PER_RISK:
                         log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
                         continue
-                    hold_days = avg_ht * 365.0
-                    if hold_days < MIN_HOLD_DAYS:
-                        mc_stats['hold_fail'] += 1
-                        log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
-                        continue
-                    if roi_monthly < TARGET_MONTHLY_RETURN:
+                    if portfolio_roi_monthly < TARGET_MONTHLY_RETURN:
                         mc_stats['roi_fail'] += 1
-                        log_filter(f"ROI/month {roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}", contract.symbol, target_exp, spread_desc)
+                        log_filter(
+                            f"Portfolio ROI/month {portfolio_roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}",
+                            contract.symbol, target_exp, spread_desc
+                        )
                         continue
 
                     opportunities.append({
@@ -1499,9 +1521,8 @@ async def main():
                         'PoP': round(pop_mc, 3),
                         'EV': round(ev, 2),
                         'EV_Per_Risk': round(ev_per_risk, 3),
-                        'Skew_Capture': round(skew_capture, 3),
-                        'Skew_Expiry': round(skew_metric, 3) if skew_metric is not None else None,
                         'ROI_Monthly': round(roi_monthly, 3),
+                        'Portfolio_ROI_Monthly': round(portfolio_roi_monthly, 3),
                         'AvgHold_days': round(hold_days, 1),
                         'P_Daytrade': round(p_daytrade, 3),
                         'IV': round(avg_iv, 3),
@@ -1607,9 +1628,19 @@ async def main():
                         log_filter(f"EV {ev:.3f} <= 0 with positive EV required", contract.symbol, target_exp, spread_desc)
                         continue
 
-                    roi_trade = ev / max_loss
+                    hold_days = avg_ht * 365.0
+                    if hold_days < MIN_HOLD_DAYS:
+                        mc_stats['hold_fail'] += 1
+                        log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
+                        continue
+
+                    risk = max_loss  # credit: capital at risk ≈ max loss (margin)
+
+                    roi_trade = ev / risk
                     ev_per_risk = roi_trade
-                    roi_monthly = roi_trade * (30.0 / days_to_expiry)
+                    roi_monthly = roi_trade * (30.0 / hold_days)
+
+                    portfolio_roi_monthly = roi_monthly * PORTFOLIO_RISK_BUDGET_FRAC
 
                     if ev < MIN_EV:
                         log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
@@ -1617,14 +1648,12 @@ async def main():
                     if ev_per_risk < MIN_EV_PER_RISK:
                         log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
                         continue
-                    hold_days = avg_ht * 365.0
-                    if hold_days < MIN_HOLD_DAYS:
-                        mc_stats['hold_fail'] += 1
-                        log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
-                        continue
-                    if roi_monthly < TARGET_MONTHLY_RETURN:
+                    if portfolio_roi_monthly < TARGET_MONTHLY_RETURN:
                         mc_stats['roi_fail'] += 1
-                        log_filter(f"ROI/month {roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}", contract.symbol, target_exp, spread_desc)
+                        log_filter(
+                            f"Portfolio ROI/month {portfolio_roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}",
+                            contract.symbol, target_exp, spread_desc
+                        )
                         continue
 
                     opportunities.append({
@@ -1638,9 +1667,8 @@ async def main():
                         'PoP': round(pop_mc, 3),
                         'EV': round(ev, 2),
                         'EV_Per_Risk': round(ev_per_risk, 3),
-                        'Skew_Capture': round(skew_capture, 3),
-                        'Skew_Expiry': round(skew_metric, 3) if skew_metric is not None else None,
                         'ROI_Monthly': round(roi_monthly, 3),
+                        'Portfolio_ROI_Monthly': round(portfolio_roi_monthly, 3),
                         'AvgHold_days': round(hold_days, 1),
                         'P_Daytrade': round(p_daytrade, 3),
                         'IV': round(avg_iv, 3),
@@ -1739,9 +1767,19 @@ async def main():
                         log_filter(f"EV {ev:.3f} <= 0 with positive EV required", contract.symbol, target_exp, spread_desc)
                         continue
 
-                    roi_trade = ev / cost
+                    hold_days = avg_ht * 365.0
+                    if hold_days < MIN_HOLD_DAYS:
+                        mc_stats['hold_fail'] += 1
+                        log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
+                        continue
+
+                    risk = cost  # debit: capital at risk is the cost
+
+                    roi_trade = ev / risk
                     ev_per_risk = roi_trade
-                    roi_monthly = roi_trade * (30.0 / days_to_expiry)
+                    roi_monthly = roi_trade * (30.0 / hold_days)
+
+                    portfolio_roi_monthly = roi_monthly * PORTFOLIO_RISK_BUDGET_FRAC
 
                     if ev < MIN_EV:
                         log_filter(f"EV {ev:.3f} < MIN_EV {MIN_EV}", contract.symbol, target_exp, spread_desc)
@@ -1749,14 +1787,12 @@ async def main():
                     if ev_per_risk < MIN_EV_PER_RISK:
                         log_filter(f"EV/risk {ev_per_risk:.3f} < {MIN_EV_PER_RISK}", contract.symbol, target_exp, spread_desc)
                         continue
-                    hold_days = avg_ht * 365.0
-                    if hold_days < MIN_HOLD_DAYS:
-                        mc_stats['hold_fail'] += 1
-                        log_filter(f"Avg hold {hold_days:.2f}d < {MIN_HOLD_DAYS}d", contract.symbol, target_exp, spread_desc)
-                        continue
-                    if roi_monthly < TARGET_MONTHLY_RETURN:
+                    if portfolio_roi_monthly < TARGET_MONTHLY_RETURN:
                         mc_stats['roi_fail'] += 1
-                        log_filter(f"ROI/month {roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}", contract.symbol, target_exp, spread_desc)
+                        log_filter(
+                            f"Portfolio ROI/month {portfolio_roi_monthly:.3f} < target {TARGET_MONTHLY_RETURN}",
+                            contract.symbol, target_exp, spread_desc
+                        )
                         continue
 
                     opportunities.append({
@@ -1770,9 +1806,8 @@ async def main():
                         'PoP': round(pop_mc, 3),
                         'EV': round(ev, 2),
                         'EV_Per_Risk': round(ev_per_risk, 3),
-                        'Skew_Capture': round(skew_capture, 3),
-                        'Skew_Expiry': round(skew_metric, 3) if skew_metric is not None else None,
                         'ROI_Monthly': round(roi_monthly, 3),
+                        'Portfolio_ROI_Monthly': round(portfolio_roi_monthly, 3),
                         'AvgHold_days': round(hold_days, 1),
                         'P_Daytrade': round(p_daytrade, 3),
                         'IV': round(avg_iv, 3),
@@ -1809,8 +1844,10 @@ async def main():
         print("\n=== HIGH VOLUME VERTICAL SPREAD OPPORTUNITIES ===")
         print(df_res.to_string(index=False))
 
-        # Save to CSV for analysis
-        # df_res.to_csv('ibkr_spreads.csv', index=False)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        csv_path = OUTPUT_DIR / f"ibkr_spreads_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        df_res.to_csv(csv_path, index=False)
+        print(f"\nSaved results to {csv_path}")
     else:
         print("\nNo spreads found matching criteria.")
         if mc_stats:
