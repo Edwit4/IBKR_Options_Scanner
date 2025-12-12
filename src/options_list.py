@@ -207,7 +207,7 @@ def simulate_vertical_pop_ev_torch(
         p_daytrade : scalar float
     """
     if T <= 0 or sigma <= 0 or S0 <= 0 or max_loss <= 0 or max_profit <= 0:
-        return 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     if device is None:
         device = choose_torch_device()
@@ -321,14 +321,36 @@ def simulate_vertical_pop_ev_torch(
         alive[idx] = False
 
     # Aggregate statistics (still on device)
-    pop = (pl_paths > 0).double().mean()
+    pop_tensor = (pl_paths > 0).double()
+    pop = pop_tensor.mean()
     ev = pl_paths.mean()
     avg_ht = ht_paths.mean()
 
     p_daytrade = (ht_paths <= daytrade_threshold_years).double().mean()
 
+    # Standard errors
+    n = float(n_paths)
+
+    # PoP: binomial standard error
+    pop_var = pop * (1.0 - pop)
+    pop_se = torch.sqrt(pop_var / n)
+
+    # EV: standard error of the mean using sample variance
+    if n_paths > 1:
+        ev_var = pl_paths.var(unbiased=True)
+        ev_se = torch.sqrt(ev_var / n)
+    else:
+        ev_se = torch.tensor(0.0, dtype=torch.float64, device=device)
+
     # Return as Python floats
-    return float(pop.item()), float(ev.item()), float(avg_ht.item()), float(p_daytrade.item())
+    return (
+        float(pop.item()),
+        float(ev.item()),
+        float(avg_ht.item()),
+        float(p_daytrade.item()),
+        float(pop_se.item()),
+        float(ev_se.item()),
+    )
 
 # ------------------------------------------
 # Utility: count candidate vertical pairs for progress bars
@@ -1299,7 +1321,7 @@ async def main():
 
                     log_pass("Running MC", contract.symbol, target_exp, spread_desc)
                     mc_stats['mc_runs'] += 1
-                    pop_mc, ev_mc, avg_ht, p_daytrade = simulate_vertical_pop_ev_torch(
+                    pop_mc, ev_mc, avg_ht, p_daytrade, pop_se, ev_se = simulate_vertical_pop_ev_torch(
                         S0=underlying_price,
                         r=RISK_FREE_RATE,
                         sigma=sigma_input,
@@ -1370,11 +1392,11 @@ async def main():
                         'Max Profit': round(max_profit, 2),
                         'Max Loss': round(cost, 2),
                         'PoP': round(pop_mc, 3),
+                        'PoP_SE': round(pop_se, 4),
                         'EV': round(ev, 2),
+                        'EV_SE': round(ev_se, 4),
                         'EV_Per_Risk': round(ev_per_risk, 3),
                         'Trend': trend,
-                        'ROI_Monthly': round(roi_monthly, 3),
-                        'Portfolio_ROI_Monthly': round(portfolio_roi_monthly, 3),
                         'AvgHold_days': round(hold_days, 1),
                         'P_Daytrade': round(p_daytrade, 3),
                         'IV': round(avg_iv, 3),
@@ -1447,7 +1469,7 @@ async def main():
 
                     log_pass("Running MC", contract.symbol, target_exp, spread_desc)
                     mc_stats['mc_runs'] += 1
-                    pop_mc, ev_mc, avg_ht, p_daytrade = simulate_vertical_pop_ev_torch(
+                    pop_mc, ev_mc, avg_ht, p_daytrade, pop_se, ev_se = simulate_vertical_pop_ev_torch(
                         S0=underlying_price,
                         r=RISK_FREE_RATE,
                         sigma=sigma_input,
@@ -1518,10 +1540,10 @@ async def main():
                         'Max Profit': round(credit, 2),
                         'Max Loss': round(max_loss, 2),
                         'PoP': round(pop_mc, 3),
+                        'PoP_SE': round(pop_se, 4),
                         'EV': round(ev, 2),
+                        'EV_SE': round(ev_se, 4),
                         'EV_Per_Risk': round(ev_per_risk, 3),
-                        'ROI_Monthly': round(roi_monthly, 3),
-                        'Portfolio_ROI_Monthly': round(portfolio_roi_monthly, 3),
                         'AvgHold_days': round(hold_days, 1),
                         'P_Daytrade': round(p_daytrade, 3),
                         'IV': round(avg_iv, 3),
@@ -1594,7 +1616,7 @@ async def main():
 
                     log_pass("Running MC", contract.symbol, target_exp, spread_desc)
                     mc_stats['mc_runs'] += 1
-                    pop_mc, ev_mc, avg_ht, p_daytrade = simulate_vertical_pop_ev_torch(
+                    pop_mc, ev_mc, avg_ht, p_daytrade, pop_se, ev_se = simulate_vertical_pop_ev_torch(
                         S0=underlying_price,
                         r=RISK_FREE_RATE,
                         sigma=sigma_input,
@@ -1664,10 +1686,10 @@ async def main():
                         'Max Profit': round(credit, 2),
                         'Max Loss': round(max_loss, 2),
                         'PoP': round(pop_mc, 3),
+                        'PoP_SE': round(pop_se, 4),
                         'EV': round(ev, 2),
+                        'EV_SE': round(ev_se, 4),
                         'EV_Per_Risk': round(ev_per_risk, 3),
-                        'ROI_Monthly': round(roi_monthly, 3),
-                        'Portfolio_ROI_Monthly': round(portfolio_roi_monthly, 3),
                         'AvgHold_days': round(hold_days, 1),
                         'P_Daytrade': round(p_daytrade, 3),
                         'IV': round(avg_iv, 3),
@@ -1733,7 +1755,7 @@ async def main():
 
                     log_pass("Running MC", contract.symbol, target_exp, spread_desc)
                     mc_stats['mc_runs'] += 1
-                    pop_mc, ev_mc, avg_ht, p_daytrade = simulate_vertical_pop_ev_torch(
+                    pop_mc, ev_mc, avg_ht, p_daytrade, pop_se, ev_se = simulate_vertical_pop_ev_torch(
                         S0=underlying_price,
                         r=RISK_FREE_RATE,
                         sigma=sigma_input,
@@ -1803,10 +1825,10 @@ async def main():
                         'Max Profit': round(max_profit, 2),
                         'Max Loss': round(cost, 2),
                         'PoP': round(pop_mc, 3),
+                        'PoP_SE': round(pop_se, 4),
                         'EV': round(ev, 2),
+                        'EV_SE': round(ev_se, 4),
                         'EV_Per_Risk': round(ev_per_risk, 3),
-                        'ROI_Monthly': round(roi_monthly, 3),
-                        'Portfolio_ROI_Monthly': round(portfolio_roi_monthly, 3),
                         'AvgHold_days': round(hold_days, 1),
                         'P_Daytrade': round(p_daytrade, 3),
                         'IV': round(avg_iv, 3),
